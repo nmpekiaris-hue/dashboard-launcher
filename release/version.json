@@ -1,0 +1,6 @@
+{
+  "versionCode": 3,
+  "versionName": "1.2",
+  "notes": "Αυτόματες ενημερώσεις από GitHub",
+  "apk": "https://raw.githubusercontent.com/nmpekiaris-hue/dashboard-launcher/main/release/Dashboard.apk"
+}
