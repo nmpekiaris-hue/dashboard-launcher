@@ -20,8 +20,8 @@ public class FavTest {
     java.lang.reflect.Method add = MainActivity.class.getDeclaredMethod("addFav", MainActivity.App.class); add.setAccessible(true);
     add.invoke(a, apps.get(2)); add.invoke(a, apps.get(0));
     t = new ArrayList<>(); collect(a.getWindow().getDecorView(), t);
-    System.out.println("FAV " + t.subList(t.indexOf("ΕΦΑΡΜΟΓΕΣ"), t.indexOf("ΣΗΜΕΡΑ")));
+    System.out.println("FAV " + t.subList(t.indexOf("ΕΦΑΡΜΟΓΕΣ"), t.indexOf("ΗΜΕΡΟΛΟΓΙΟ")));
     int v = t.indexOf("Viber"), c = t.indexOf("AutoCAD");
-    assertTrue(v > 0 && c > 0 && v < t.indexOf("ΣΗΜΕΡΑ"));
+    assertTrue(v > 0 && c > 0 && v < t.indexOf("ΗΜΕΡΟΛΟΓΙΟ"));
   }
 }

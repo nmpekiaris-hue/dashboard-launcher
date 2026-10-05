@@ -1,6 +1,6 @@
 {
-  "versionCode": 4,
-  "versionName": "1.3",
-  "notes": "Νέα ενότητα «Εφαρμογές»: βάζεις όποιες εφαρμογές θες στην αρχική",
+  "versionCode": 5,
+  "versionName": "1.4",
+  "notes": "Ημερολόγιο σε μορφή μήνα: πατάς τη μέρα και βλέπεις τα δεδομένα της",
   "apk": "https://raw.githubusercontent.com/nmpekiaris-hue/dashboard-launcher/main/release/Dashboard.apk"
 }

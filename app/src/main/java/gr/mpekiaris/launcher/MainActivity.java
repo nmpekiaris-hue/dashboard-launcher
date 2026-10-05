@@ -234,7 +234,7 @@ public class MainActivity extends Activity {
 
         // Sections
         favBox = section(col, "ΕΦΑΡΜΟΓΕΣ", "+ Προσθήκη", v -> pickFavs());
-        calendarBox = section(col, "ΣΗΜΕΡΑ", "+ Νέο", v -> showAddEvent());
+        calendarBox = section(col, "ΗΜΕΡΟΛΟΓΙΟ", "+ Νέο", v -> showAddEvent());
         ((View) calendarBox.getParent()).setOnLongClickListener(v -> {
             boolean in = !prefs.getString("cookie", "").isEmpty();
             String[] items = in ? new String[]{"Άνοιγμα πλατφόρμας", "Ανανέωση", "Άδεια ημερολογίου κινητού", "Αποσύνδεση"}
@@ -590,78 +590,241 @@ public class MainActivity extends Activity {
         catch (Exception e) { return "Σφάλμα " + r.code; }
     }
 
-    /** Φέρνει τα σημερινά της πλατφόρμας στο παρασκήνιο και ξαναζωγραφίζει. */
+    // ---- Μηνιαίο ημερολόγιο ----
+    private int calY = -1, calM = -1;          // μήνας που φαίνεται (calM 0-11)
+    private String selDay = null;              // επιλεγμένη ημέρα yyyy-MM-dd
+    private final java.util.Set<String> fetchingMonths = new java.util.HashSet<>();
+    private static final String[] MONTHS = {"Ιανουάριος", "Φεβρουάριος", "Μάρτιος", "Απρίλιος", "Μάιος", "Ιούνιος",
+            "Ιούλιος", "Αύγουστος", "Σεπτέμβριος", "Οκτώβριος", "Νοέμβριος", "Δεκέμβριος"};
+
+    private static String iso(int y, int m0, int d) { return String.format(Locale.US, "%04d-%02d-%02d", y, m0 + 1, d); }
+    private String monthKey() { return String.format(Locale.US, "%04d-%02d", calY, calM + 1); }
+
+    private void ensureCalState() {
+        if (calY < 0) {
+            Calendar c = Calendar.getInstance();
+            calY = c.get(Calendar.YEAR); calM = c.get(Calendar.MONTH);
+        }
+        if (selDay == null) selDay = todayIso();
+    }
+
+    /** Φέρνει τον μήνα που φαίνεται από την πλατφόρμα στο παρασκήνιο και ξαναζωγραφίζει. */
     private void fetchPlatform() {
-        if (fetching || prefs.getString("cookie", "").isEmpty()) return;
-        fetching = true;
-        final String day = todayIso();
+        ensureCalState();
+        if (prefs.getString("cookie", "").isEmpty()) return;
+        final String mk = monthKey();
+        if (fetchingMonths.contains(mk)) return;
+        fetchingMonths.add(mk);
+        Calendar c = Calendar.getInstance();
+        c.set(calY, calM, 1);
+        final String from = iso(calY, calM, 1), to = iso(calY, calM, c.getActualMaximum(Calendar.DAY_OF_MONTH));
         net.execute(() -> {
             String err = null;
             try {
-                Resp r = http("GET", "/calendar?from=" + day + "&to=" + day, null);
+                Resp r = http("GET", "/calendar?from=" + from + "&to=" + to, null);
                 if (r.code == 401) {
-                    prefs.edit().remove("cookie").remove("plat_cache").apply();
+                    prefs.edit().remove("cookie").apply();
                     err = "Η σύνδεση έληξε";
                 } else if (r.code >= 400) {
                     err = errMsg(r);
                 } else {
                     JSONArray ev = new JSONObject(r.body).optJSONArray("events");
-                    prefs.edit().putString("plat_cache", ev == null ? "[]" : ev.toString())
-                            .putString("plat_day", day).putLong("plat_at", System.currentTimeMillis()).apply();
+                    prefs.edit().putString("plat_m_" + mk, ev == null ? "[]" : ev.toString()).apply();
                 }
             } catch (Exception e) {
                 err = "Χωρίς σύνδεση με την πλατφόρμα";
             }
             final String fe = err;
             runOnUiThread(() -> {
-                fetching = false;
+                fetchingMonths.remove(mk);
                 prefs.edit().putString("plat_err", fe == null ? "" : fe).apply();
                 if (!isFinishing()) renderCalendar();
             });
         });
     }
 
-    private void renderCalendar() {
-        calendarBox.removeAllViews();
-        int shown = 0;
+    /** Γεγονότα πλατφόρμας του μήνα που φαίνεται, ανά ημέρα. */
+    private Map<String, List<JSONObject>> platByDay() {
+        Map<String, List<JSONObject>> m = new java.util.HashMap<>();
+        if (prefs.getString("cookie", "").isEmpty()) return m;
+        try {
+            JSONArray ev = new JSONArray(prefs.getString("plat_m_" + monthKey(), "[]"));
+            for (int i = 0; i < ev.length(); i++) {
+                JSONObject o = ev.optJSONObject(i);
+                if (o == null) continue;
+                String d = o.optString("date", "");
+                if (d.length() >= 10) d = d.substring(0, 10);
+                List<JSONObject> l = m.get(d);
+                if (l == null) { l = new ArrayList<>(); m.put(d, l); }
+                l.add(o);
+            }
+        } catch (Exception ignored) {}
+        return m;
+    }
 
-        // ---- Πλατφόρμα ----
-        if (prefs.getString("cookie", "").isEmpty()) {
+    private void renderCalendar() {
+        ensureCalState();
+        calendarBox.removeAllViews();
+        boolean loggedIn = !prefs.getString("cookie", "").isEmpty();
+
+        if (!loggedIn) {
             TextView t = text("Σύνδεση στην πλατφόρμα ΜΠΕΚΙΑΡΗΣ", 15, ACCENT, true);
-            t.setPadding(0, dp(6), 0, dp(6));
+            t.setPadding(0, dp(4), 0, dp(8));
             t.setOnClickListener(v -> showLogin());
             calendarBox.addView(t);
-            String err = prefs.getString("plat_err", "");
-            if (!err.isEmpty()) calendarBox.addView(text(err, 13, MUTED, false));
-        } else {
-            JSONArray ev = new JSONArray();
-            if (todayIso().equals(prefs.getString("plat_day", ""))) {
-                try { ev = new JSONArray(prefs.getString("plat_cache", "[]")); } catch (Exception ignored) {}
-            }
-            List<JSONObject> list = new ArrayList<>();
-            for (int i = 0; i < ev.length(); i++) { JSONObject o = ev.optJSONObject(i); if (o != null) list.add(o); }
-            Collections.sort(list, (a, b) -> Integer.compare(rank(a), rank(b)) != 0 ? Integer.compare(rank(a), rank(b))
-                    : a.optString("time", "99").compareTo(b.optString("time", "99")));
-            for (JSONObject e : list) { calendarBox.addView(platRow(e)); shown++; }
-            String err = prefs.getString("plat_err", "");
-            if (!err.isEmpty()) {
-                TextView t = text("⚠ " + err + (prefs.getString("cookie", "").isEmpty() ? "" : " · πάτα για ανανέωση"), 13, MUTED, false);
-                t.setPadding(0, dp(4), 0, dp(4));
-                t.setOnClickListener(v -> fetchPlatform());
-                calendarBox.addView(t);
-            }
         }
 
-        // ---- Ημερολόγιο κινητού (αν έχει δοθεί άδεια) ----
+        // ---- Κεφαλίδα μήνα ----
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView prev = text("‹", 26, TEXT, false);
+        prev.setPadding(dp(4), 0, dp(16), dp(2));
+        prev.setOnClickListener(v -> moveMonth(-1));
+        TextView title = text(MONTHS[calM] + " " + calY, 17, TEXT, true);
+        title.setGravity(Gravity.CENTER);
+        TextView next = text("›", 26, TEXT, false);
+        next.setPadding(dp(16), 0, dp(4), dp(2));
+        next.setOnClickListener(v -> moveMonth(1));
+        head.addView(prev);
+        head.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        head.addView(next);
+        String today = todayIso();
+        if (!today.equals(selDay) || !today.startsWith(monthKey())) {
+            TextView tb = text("Σήμερα", 13, ACCENT, true);
+            tb.setPadding(dp(10), dp(6), 0, dp(6));
+            tb.setOnClickListener(v -> { calY = -1; selDay = todayIso(); ensureCalState(); renderCalendar(); fetchPlatform(); });
+            head.addView(tb);
+        }
+        calendarBox.addView(head, lp(-1, -2, 0, 0, 0, dp(6)));
+
+        // ---- Ημέρες εβδομάδας ----
+        LinearLayout wd = new LinearLayout(this);
+        for (String s : new String[]{"Δ", "Τ", "Τ", "Π", "Π", "Σ", "Κ"}) {
+            TextView t = text(s, 12, MUTED, true);
+            t.setGravity(Gravity.CENTER);
+            wd.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
+        }
+        calendarBox.addView(wd, lp(-1, -2, 0, 0, 0, dp(4)));
+
+        // ---- Πλέγμα ----
+        Map<String, List<JSONObject>> byDay = platByDay();
+        Map<String, Integer> phone = phoneMonthCounts();
+        Calendar c = Calendar.getInstance();
+        c.set(calY, calM, 1);
+        int days = c.getActualMaximum(Calendar.DAY_OF_MONTH);
+        int pad = (c.get(Calendar.DAY_OF_WEEK) + 5) % 7;   // Δευτέρα πρώτη
+        int cells = ((pad + days + 6) / 7) * 7;
+        LinearLayout row = null;
+        for (int i = 0; i < cells; i++) {
+            if (i % 7 == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                calendarBox.addView(row, new LinearLayout.LayoutParams(-1, dp(46)));
+            }
+            int d = i - pad + 1;
+            if (d < 1 || d > days) { row.addView(new View(this), new LinearLayout.LayoutParams(0, -1, 1f)); continue; }
+            String key = iso(calY, calM, d);
+            row.addView(dayCell(d, key, key.equals(today), key.equals(selDay), byDay.get(key),
+                    phone.containsKey(key)), new LinearLayout.LayoutParams(0, -1, 1f));
+        }
+
+        // ---- Λεπτομέρειες επιλεγμένης ημέρας ----
+        View sep = new View(this);
+        sep.setBackgroundColor(0xFF2A303B);
+        calendarBox.addView(sep, lp(-1, dp(1), 0, dp(10), 0, dp(6)));
+        calendarBox.addView(text(dayTitle(selDay), 14, ACCENT, true), lp(-1, -2, 0, dp(2), 0, dp(2)));
+
+        int shown = 0;
+        if (selDay.startsWith(monthKey())) {
+            List<JSONObject> list = byDay.get(selDay);
+            if (list != null) {
+                list = new ArrayList<>(list);
+                Collections.sort(list, (a, b) -> rank(a) != rank(b) ? Integer.compare(rank(a), rank(b))
+                        : a.optString("time", "99").compareTo(b.optString("time", "99")));
+                for (JSONObject e : list) { calendarBox.addView(platRow(e)); shown++; }
+            }
+        }
         if (checkSelfPermission(Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED) {
-            shown += renderPhoneCalendar();
+            shown += renderPhoneCalendar(selDay);
+        }
+        if (shown == 0) {
+            TextView t = text(fetchingMonths.contains(monthKey()) ? "⏳ φόρτωση…" : "Τίποτα για αυτή την ημέρα", 14, MUTED, false);
+            t.setPadding(0, dp(6), 0, dp(4));
+            calendarBox.addView(t);
         }
 
-        if (shown == 0 && !prefs.getString("cookie", "").isEmpty()) {
-            TextView t = text("Τίποτα για σήμερα", 15, MUTED, false);
-            t.setPadding(0, dp(6), 0, dp(6));
-            t.setOnClickListener(v -> openPlatform());
+        String err = prefs.getString("plat_err", "");
+        if (!err.isEmpty()) {
+            TextView t = text("⚠ " + err + (loggedIn ? " · πάτα για ανανέωση" : ""), 13, MUTED, false);
+            t.setPadding(0, dp(6), 0, dp(2));
+            t.setOnClickListener(v -> { if (loggedIn) fetchPlatform(); else showLogin(); });
             calendarBox.addView(t);
+        }
+    }
+
+    private void moveMonth(int delta) {
+        ensureCalState();
+        calM += delta;
+        if (calM < 0) { calM = 11; calY--; }
+        if (calM > 11) { calM = 0; calY++; }
+        String today = todayIso();
+        selDay = today.startsWith(monthKey()) ? today : iso(calY, calM, 1);
+        renderCalendar();
+        fetchPlatform();
+    }
+
+    private static String dayTitle(String iso) {
+        try {
+            Date d = new SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(iso);
+            String s = new SimpleDateFormat("EEEE d MMMM", EL).format(d);
+            return Character.toUpperCase(s.charAt(0)) + s.substring(1);
+        } catch (Exception e) { return iso; }
+    }
+
+    private View dayCell(int d, String key, boolean isToday, boolean isSel, List<JSONObject> ev, boolean hasPhone) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(Gravity.CENTER);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(10));
+        if (isSel) bg.setColor(ACCENT);
+        else if (isToday) bg.setStroke(dp(2), ACCENT);
+        else bg.setColor(0x00000000);
+        cell.setBackground(bg);
+        boolean overdue = false;
+        if (ev != null && key.compareTo(todayIso()) < 0) for (JSONObject e : ev) if ("todo".equals(e.optString("kind"))) overdue = true;
+        TextView n = text(String.valueOf(d), 15, isSel ? BG : (overdue ? 0xFFE5707A : TEXT), isSel || isToday);
+        n.setGravity(Gravity.CENTER);
+        cell.addView(n);
+
+        LinearLayout dots = new LinearLayout(this);
+        dots.setGravity(Gravity.CENTER);
+        java.util.LinkedHashSet<Integer> colors = new java.util.LinkedHashSet<>();
+        if (ev != null) for (JSONObject e : ev) colors.add(kindColor(e.optString("kind")));
+        if (hasPhone) colors.add(0xFFB8BEC8);
+        int k = 0;
+        for (int col : colors) {
+            if (k++ == 4) break;
+            View dot = new View(this);
+            GradientDrawable g = new GradientDrawable();
+            g.setShape(GradientDrawable.OVAL);
+            g.setColor(isSel ? BG : col);
+            dot.setBackground(g);
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(5), dp(5));
+            p.setMargins(dp(1), dp(2), dp(1), 0);
+            dots.addView(dot, p);
+        }
+        cell.addView(dots, new LinearLayout.LayoutParams(-2, dp(8)));
+        cell.setOnClickListener(v -> { selDay = key; renderCalendar(); });
+        return cell;
+    }
+
+    private static int kindColor(String kind) {
+        switch (kind) {
+            case "sched": return 0xFF5FB3F0;
+            case "todo": case "expiry": return 0xFFE5707A;
+            default: return ACCENT;
         }
     }
 
@@ -781,7 +944,7 @@ public class MainActivity extends Activity {
     private void platLogout() {
         net.execute(() -> {
             try { http("POST", "/logout", "{}"); } catch (Exception ignored) {}
-            prefs.edit().remove("cookie").remove("plat_cache").putString("plat_err", "").apply();
+            prefs.edit().remove("cookie").putString("plat_err", "").apply();
             runOnUiThread(this::renderCalendar);
         });
     }
@@ -801,7 +964,7 @@ public class MainActivity extends Activity {
         shared.setText("👥 Να το βλέπουν όλοι");
         box.addView(title); box.addView(time); box.addView(shared);
         new AlertDialog.Builder(this)
-                .setTitle("Νέα καταχώρηση σήμερα")
+                .setTitle("Νέα καταχώρηση · " + dayTitle(selDay))
                 .setView(box)
                 .setPositiveButton("Προσθήκη", (d, w) -> {
                     String t = title.getText().toString().trim();
@@ -830,7 +993,8 @@ public class MainActivity extends Activity {
     }
 
     private void platAdd(String title, String time, boolean shared) {
-        final String day = todayIso();
+        ensureCalState();
+        final String day = selDay;
         net.execute(() -> {
             String err = null;
             try {
@@ -856,14 +1020,57 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** Ραντεβού του ημερολογίου του κινητού για σήμερα· επιστρέφει πόσα έδειξε. */
-    private int renderPhoneCalendar() {
+    private long[] dayBounds(String iso) {
         Calendar c = Calendar.getInstance();
+        try { c.setTime(new SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(iso)); } catch (Exception ignored) {}
         c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0);
         c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0);
+        long s = c.getTimeInMillis();
+        c.add(Calendar.DAY_OF_MONTH, 1);
+        return new long[]{s, c.getTimeInMillis()};
+    }
+
+    /** Ημέρες του μήνα που φαίνεται με ραντεβού στο ημερολόγιο του κινητού (για τις τελίτσες). */
+    private Map<String, Integer> phoneMonthCounts() {
+        Map<String, Integer> m = new java.util.HashMap<>();
+        if (checkSelfPermission(Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) return m;
+        Calendar c = Calendar.getInstance();
+        c.set(calY, calM, 1, 0, 0, 0); c.set(Calendar.MILLISECOND, 0);
         long start = c.getTimeInMillis();
-        long end = start + 24L * 3600 * 1000;
-        String todayKey = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date(start));
+        c.add(Calendar.MONTH, 1);
+        long end = c.getTimeInMillis();
+        SimpleDateFormat local = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        SimpleDateFormat utc = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        utc.setTimeZone(TimeZone.getTimeZone("UTC"));
+        Uri.Builder ub = CalendarContract.Instances.CONTENT_URI.buildUpon();
+        ContentUris.appendId(ub, start - 86400000L);
+        ContentUris.appendId(ub, end + 86400000L);
+        String[] proj = {CalendarContract.Instances.BEGIN, CalendarContract.Instances.END, CalendarContract.Instances.ALL_DAY};
+        try (Cursor cur = getContentResolver().query(ub.build(), proj, null, null, null)) {
+            while (cur != null && cur.moveToNext()) {
+                long b = cur.getLong(0), e = cur.getLong(1);
+                boolean allDay = cur.getInt(2) == 1;
+                // κάθε ημέρα που αγγίζει το γεγονός
+                SimpleDateFormat f = allDay ? utc : local;
+                Calendar it = Calendar.getInstance(allDay ? TimeZone.getTimeZone("UTC") : TimeZone.getDefault());
+                it.setTimeInMillis(b);
+                long last = allDay ? e - 1 : Math.max(b, e - 1);
+                for (int guard = 0; guard < 62 && it.getTimeInMillis() <= last; guard++) {
+                    String k = f.format(it.getTime());
+                    if (k.startsWith(monthKey())) m.put(k, m.containsKey(k) ? m.get(k) + 1 : 1);
+                    it.add(Calendar.DAY_OF_MONTH, 1);
+                    it.set(Calendar.HOUR_OF_DAY, 0); it.set(Calendar.MINUTE, 0); it.set(Calendar.SECOND, 0);
+                }
+            }
+        } catch (Exception ignored) {}
+        return m;
+    }
+
+    /** Ραντεβού του ημερολογίου του κινητού για μια ημέρα· επιστρέφει πόσα έδειξε. */
+    private int renderPhoneCalendar(String dayIso) {
+        long[] bd = dayBounds(dayIso);
+        long start = bd[0], end = bd[1];
+        String todayKey = dayIso.replace("-", "");
         SimpleDateFormat utcKey = new SimpleDateFormat("yyyyMMdd", Locale.US);
         utcKey.setTimeZone(TimeZone.getTimeZone("UTC"));
         SimpleDateFormat hm = new SimpleDateFormat("HH:mm", EL);
@@ -879,7 +1086,7 @@ public class MainActivity extends Activity {
         long now = System.currentTimeMillis();
         try (Cursor cur = getContentResolver().query(ub.build(), proj, null, null,
                 CalendarContract.Instances.ALL_DAY + " DESC, " + CalendarContract.Instances.BEGIN + " ASC")) {
-            while (cur != null && cur.moveToNext() && shown < 6) {
+            while (cur != null && cur.moveToNext() && shown < 10) {
                 String title = cur.getString(0);
                 long b = cur.getLong(1), e = cur.getLong(2);
                 boolean allDay = cur.getInt(3) == 1;

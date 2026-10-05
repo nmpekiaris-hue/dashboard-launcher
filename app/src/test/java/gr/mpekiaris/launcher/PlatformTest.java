@@ -9,6 +9,7 @@ import static org.junit.Assert.*; import static org.robolectric.Shadows.shadowOf
 public class PlatformTest {
   static String lastPost = "";
   void collect(View v, List<String> out) { if (v instanceof TextView) out.add(((TextView)v).getText().toString()); if (v instanceof ViewGroup) for (int i=0;i<((ViewGroup)v).getChildCount();i++) collect(((ViewGroup)v).getChildAt(i), out); }
+  View find(View v, String txt) { if (v instanceof TextView && txt.equals(((TextView)v).getText().toString())) return v; if (v instanceof ViewGroup) for (int i=0;i<((ViewGroup)v).getChildCount();i++) { View r = find(((ViewGroup)v).getChildAt(i), txt); if (r != null) return r; } return null; }
   @Test public void loginAndCalendar() throws Exception {
     MockWebServer srv = new MockWebServer();
     srv.setDispatcher(new Dispatcher() { @Override public MockResponse dispatch(RecordedRequest r) {
@@ -16,9 +17,9 @@ public class PlatformTest {
       if (path.startsWith("/api/login")) return new MockResponse().addHeader("Set-Cookie", "sid=abc123; Path=/; HttpOnly").addHeader("Content-Type","application/json").setBody("{\"user\":{}}");
       if (path.startsWith("/api/calendar") && "POST".equals(r.getMethod())) { lastPost = r.getBody().readUtf8(); return new MockResponse().setBody("{\"ok\":true}"); }
       if (ck == null || !ck.contains("sid=abc123")) return new MockResponse().setResponseCode(401).setBody("{\"error\":\"x\"}");
-      return new MockResponse().addHeader("Content-Type","application/json").setBody("{\"events\":[{\"kind\":\"todo\",\"title\":\"Προσφορά Λαμία\",\"resp\":\"Νίκος\",\"priority\":\"high\"},"+
-        "{\"kind\":\"event\",\"title\":\"Ραντεβού ΔΕΔΔΗΕ\",\"time\":\"10:30\",\"mine\":true,\"id\":7},"+
-        "{\"kind\":\"sched\",\"edge\":\"start\",\"title\":\"Ηλεκτρολογικά\",\"store\":\"ΛΑΜΙΑ 1\",\"proj\":\"Πυρασφάλεια\"}]}");
+      return new MockResponse().addHeader("Content-Type","application/json").setBody("{\"events\":[{\"date\":\"" + java.time.LocalDate.now() + "\",\"kind\":\"todo\",\"title\":\"Προσφορά Λαμία\",\"resp\":\"Νίκος\",\"priority\":\"high\"},"+
+        "{\"date\":\"" + java.time.LocalDate.now() + "\",\"kind\":\"event\",\"title\":\"Ραντεβού ΔΕΔΔΗΕ\",\"time\":\"10:30\",\"mine\":true,\"id\":7},"+
+        "{\"date\":\"" + java.time.LocalDate.now() + "\",\"kind\":\"sched\",\"edge\":\"start\",\"title\":\"Ηλεκτρολογικά\",\"store\":\"ΛΑΜΙΑ 1\",\"proj\":\"Πυρασφάλεια\"}]}");
     }});
     srv.start();
     Context ctx = RuntimeEnvironment.getApplication();
@@ -33,6 +34,14 @@ public class PlatformTest {
     System.out.println("TEXTS " + t);
     assertTrue(t.contains("Ραντεβού ΔΕΔΔΗΕ")); assertTrue(t.contains("Προσφορά Λαμία")); assertTrue(t.contains("▶ Έναρξη"));
     assertTrue(t.indexOf("Ραντεβού ΔΕΔΔΗΕ") < t.indexOf("Προσφορά Λαμία"));
+    assertTrue(t.contains("Οκτώβριος 2026") || t.stream().anyMatch(x -> x.matches("\\p{L}+ \\d{4}")));
+    // πάτα άλλη ημέρα (την 1η αν σήμερα δεν είναι 1η) → δεν πρέπει να δείχνει τα σημερινά
+    String other = java.time.LocalDate.now().getDayOfMonth() == 1 ? "2" : "1";
+    View cell = find(a.getWindow().getDecorView(), other);
+    ((View) cell.getParent()).performClick(); shadowOf(a.getMainLooper()).idle();
+    t = new ArrayList<>(); collect(a.getWindow().getDecorView(), t);
+    System.out.println("OTHERDAY " + t.subList(t.indexOf("ΗΜΕΡΟΛΟΓΙΟ"), t.indexOf("ΓΡΗΓΟΡΕΣ ΚΛΗΣΕΙΣ")).subList(0, 3) + " ... " + t.contains("Τίποτα για αυτή την ημέρα"));
+    assertFalse(t.contains("Ραντεβού ΔΕΔΔΗΕ")); assertTrue(t.contains("Τίποτα για αυτή την ημέρα"));
     java.lang.reflect.Method add = MainActivity.class.getDeclaredMethod("platAdd", String.class, String.class, boolean.class); add.setAccessible(true);
     add.invoke(a, "Αυτοψία", "09:00", true);
     for (int i = 0; i < 20; i++) { Thread.sleep(100); shadowOf(a.getMainLooper()).idle(); }
