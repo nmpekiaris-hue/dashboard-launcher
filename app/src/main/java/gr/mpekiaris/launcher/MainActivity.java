@@ -95,6 +95,7 @@ public class MainActivity extends Activity {
     private EditText search;
     private LinearLayout results;
     private LinearLayout calendarBox;
+    private LinearLayout favBox;
     private LinearLayout callsBox;
     private LinearLayout todoBox;
     private LinearLayout dock;
@@ -122,6 +123,7 @@ public class MainActivity extends Activity {
         super.onResume();
         updateDate();
         loadApps();
+        renderFav();
         renderCalendar();
         fetchPlatform();
         renderCalls();
@@ -231,6 +233,7 @@ public class MainActivity extends Activity {
         col.addView(results, lp(-1, -2, 0, 0, 0, dp(8)));
 
         // Sections
+        favBox = section(col, "ΕΦΑΡΜΟΓΕΣ", "+ Προσθήκη", v -> pickFavs());
         calendarBox = section(col, "ΣΗΜΕΡΑ", "+ Νέο", v -> showAddEvent());
         ((View) calendarBox.getParent()).setOnLongClickListener(v -> {
             boolean in = !prefs.getString("cookie", "").isEmpty();
@@ -347,10 +350,7 @@ public class MainActivity extends Activity {
         results.setVisibility(list.isEmpty() ? View.GONE : View.VISIBLE);
         PackageManager pm = getPackageManager();
         for (App a : list) {
-            if (a.icon == null) {
-                try { a.icon = pm.getActivityIcon(new ComponentName(a.pkg, a.cls)); }
-                catch (Exception e) { a.icon = pm.getDefaultActivityIcon(); }
-            }
+            iconOf(a);
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
@@ -364,8 +364,12 @@ public class MainActivity extends Activity {
             row.addView(tv);
             row.setOnClickListener(v -> launch(a));
             row.setOnLongClickListener(v -> {
-                openIntent(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.parse("package:" + a.pkg)));
+                boolean pinned = favKeys().contains(key(a));
+                String[] items = {pinned ? "Είναι ήδη στην αρχική" : "Προσθήκη στην αρχική", "Πληροφορίες εφαρμογής"};
+                new AlertDialog.Builder(this).setTitle(a.label).setItems(items, (d, w) -> {
+                    if (w == 0) { if (!pinned) addFav(a); }
+                    else openIntent(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + a.pkg)));
+                }).show();
                 return true;
             });
             results.addView(row);
@@ -377,6 +381,143 @@ public class MainActivity extends Activity {
         i.setComponent(new ComponentName(a.pkg, a.cls));
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
         openIntent(i);
+    }
+
+    // ---------- Εφαρμογές στην αρχική ----------
+
+    private static String key(App a) { return a.pkg + "/" + a.cls; }
+
+    private List<String> favKeys() {
+        JSONArray arr = readArr("fav");
+        List<String> l = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) l.add(arr.optString(i));
+        return l;
+    }
+
+    private void saveFav(List<String> l) {
+        JSONArray a = new JSONArray();
+        for (String s : l) a.put(s);
+        saveArr("fav", a);
+    }
+
+    private App findApp(String k) {
+        for (App a : apps) if (key(a).equals(k)) return a;
+        // ίδιο πακέτο, άλλη activity (π.χ. μετά από ενημέρωση της εφαρμογής)
+        String pkg = k.contains("/") ? k.substring(0, k.indexOf('/')) : k;
+        for (App a : apps) if (a.pkg.equals(pkg)) return a;
+        return null;
+    }
+
+    private Drawable iconOf(App a) {
+        if (a.icon == null) {
+            PackageManager pm = getPackageManager();
+            try { a.icon = pm.getActivityIcon(new ComponentName(a.pkg, a.cls)); }
+            catch (Exception e) { a.icon = pm.getDefaultActivityIcon(); }
+        }
+        return a.icon;
+    }
+
+    private void renderFav() {
+        favBox.removeAllViews();
+        List<String> keys = favKeys();
+        List<App> list = new ArrayList<>();
+        for (String k : keys) { App a = findApp(k); if (a != null && !list.contains(a)) list.add(a); }
+        if (list.isEmpty()) {
+            TextView t = text("Πάτα «+ Προσθήκη» για να βάλεις εφαρμογές εδώ", 15, MUTED, false);
+            t.setPadding(0, dp(6), 0, dp(6));
+            t.setOnClickListener(v -> pickFavs());
+            favBox.addView(t);
+            return;
+        }
+        final int COLS = 4;
+        LinearLayout row = null;
+        for (int i = 0; i < list.size(); i++) {
+            if (i % COLS == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                favBox.addView(row, lp(-1, -2, 0, dp(2), 0, dp(2)));
+            }
+            App a = list.get(i);
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            cell.setGravity(Gravity.CENTER_HORIZONTAL);
+            cell.setPadding(dp(2), dp(8), dp(2), dp(6));
+            cell.setBackground(ripple());
+            ImageView iv = new ImageView(this);
+            iv.setImageDrawable(iconOf(a));
+            cell.addView(iv, new LinearLayout.LayoutParams(dp(50), dp(50)));
+            TextView tv = text(a.label, 12, TEXT, false);
+            tv.setSingleLine(true);
+            tv.setEllipsize(TextUtils.TruncateAt.END);
+            tv.setGravity(Gravity.CENTER_HORIZONTAL);
+            tv.setPadding(0, dp(5), 0, 0);
+            cell.addView(tv, new LinearLayout.LayoutParams(-1, -2));
+            cell.setOnClickListener(v -> launch(a));
+            final int idx = i, total = list.size();
+            cell.setOnLongClickListener(v -> { favMenu(a, idx, total); return true; });
+            row.addView(cell, new LinearLayout.LayoutParams(0, -2, 1f));
+        }
+        int rest = list.size() % COLS;
+        if (rest != 0 && row != null) for (int i = rest; i < COLS; i++) row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+    }
+
+    private void favMenu(App a, int idx, int total) {
+        List<String> opts = new ArrayList<>();
+        if (idx > 0) opts.add("◀ Μετακίνηση αριστερά");
+        if (idx < total - 1) opts.add("Μετακίνηση δεξιά ▶");
+        opts.add("Αφαίρεση από την αρχική");
+        opts.add("Πληροφορίες εφαρμογής");
+        String[] items = opts.toArray(new String[0]);
+        new AlertDialog.Builder(this).setTitle(a.label).setItems(items, (d, w) -> {
+            String it = items[w];
+            List<String> l = new ArrayList<>();
+            for (String k : favKeys()) { App x = findApp(k); if (x != null && !l.contains(key(x))) l.add(key(x)); }
+            int pos = l.indexOf(key(a));
+            if (it.startsWith("◀") && pos > 0) Collections.swap(l, pos, pos - 1);
+            else if (it.startsWith("Μετακίνηση δεξιά") && pos >= 0 && pos < l.size() - 1) Collections.swap(l, pos, pos + 1);
+            else if (it.startsWith("Αφαίρεση")) l.remove(key(a));
+            else if (it.startsWith("Πληροφορίες")) {
+                openIntent(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + a.pkg)));
+                return;
+            }
+            saveFav(l);
+            renderFav();
+        }).show();
+    }
+
+    private void addFav(App a) {
+        List<String> l = favKeys();
+        if (l.contains(key(a))) { toast("Υπάρχει ήδη στην αρχική"); return; }
+        l.add(key(a));
+        saveFav(l);
+        renderFav();
+        toast(a.label + ": προστέθηκε στην αρχική");
+    }
+
+    private void pickFavs() {
+        if (apps.isEmpty()) loadApps();
+        String[] labels = new String[apps.size()];
+        boolean[] checked = new boolean[apps.size()];
+        List<String> cur = favKeys();
+        for (int i = 0; i < apps.size(); i++) {
+            labels[i] = apps.get(i).label;
+            checked[i] = cur.contains(key(apps.get(i)));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Εφαρμογές στην αρχική")
+                .setMultiChoiceItems(labels, checked, (d, w, on) -> checked[w] = on)
+                .setPositiveButton("OK", (d, w) -> {
+                    // κράτα τη σειρά των υπαρχόντων, νέες στο τέλος
+                    List<String> l = new ArrayList<>();
+                    for (String k : cur) {
+                        for (int i = 0; i < apps.size(); i++) if (checked[i] && key(apps.get(i)).equals(k)) l.add(k);
+                    }
+                    for (int i = 0; i < apps.size(); i++) if (checked[i] && !l.contains(key(apps.get(i)))) l.add(key(apps.get(i)));
+                    saveFav(l);
+                    renderFav();
+                })
+                .setNegativeButton("Άκυρο", null)
+                .show();
     }
 
     // ---------- Calendar: πλατφόρμα ΜΠΕΚΙΑΡΗΣ + ημερολόγιο κινητού ----------
